@@ -1,3 +1,4 @@
+from typing import cast, Callable, Protocol, TypeVar, ParamSpec
 import os
 import socket
 import torch.distributed as dist
@@ -5,10 +6,12 @@ import ray
 from ray.train._internal.worker_group import WorkerGroup
 from ray.train._internal.utils import get_address_and_port
 from ray.train.torch.config import (
-    _setup_torch_process_group,
-    _TorchBackend,
+    _setup_torch_process_group, _TorchBackend, # pyright: ignore[reportPrivateUsage]
     TorchConfig
 )
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
 
 def _is_free_port(_port: int) -> bool:
     """Check if a port is free."""
@@ -22,10 +25,31 @@ def _is_free_port(_port: int) -> bool:
 def _find_port(_range: range) -> int:
 
     for port in _range:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM):
             if _is_free_port(port):
                 return port
     raise RuntimeError("No available port found in the specified range.")
+
+class ExecuteSingle(Protocol):
+    def __call__(
+        self, worker_index: int, func: Callable[_P, _R],
+        *args: _P.args, **kwargs: _P.kwargs
+        ) -> _R:
+        ...
+
+class Execute(Protocol):
+    def __call__(
+        self, func: Callable[_P, _R],
+        *args: _P.args, **kwargs: _P.kwargs
+        ) -> _R:
+        ...
+
+class ExecuteSingleAsync(Protocol):
+    def __call__(
+        self, worker_index: int, func: Callable[_P, _R],
+        *args: _P.args, **kwargs: _P.kwargs
+        ) -> ray.ObjectRef[_R]:
+        ...
 
 class RangedTorchConfig(TorchConfig):
     @property
@@ -34,7 +58,7 @@ class RangedTorchConfig(TorchConfig):
 
 class RangedTorchBackend(_TorchBackend):
 
-    def on_start(self, worker_group: WorkerGroup, backend_config: RangedTorchConfig): # type: ignore[reportIncompatibleMethodOverride]
+    def on_start(self, worker_group: WorkerGroup, backend_config: RangedTorchConfig): # pyright: ignore[reportIncompatibleMethodOverride]
 
         if dist.is_available():
             # Set the appropriate training backend.
@@ -46,7 +70,12 @@ class RangedTorchBackend(_TorchBackend):
             else:
                 backend = backend_config.backend
 
-            master_addr, master_port = worker_group.execute_single(
+            execute_single = cast(
+                ExecuteSingle,
+                worker_group.execute_single # pyright: ignore[reportUnknownMemberType]
+            )
+
+            master_addr, master_port = execute_single(
                 0, get_address_and_port
             )
 
@@ -69,11 +98,16 @@ class RangedTorchBackend(_TorchBackend):
 
             if backend_config.init_method == "env":
 
-                def set_env_vars(addr, port):
+                def set_env_vars(addr: str, port: int):
                     os.environ["MASTER_ADDR"] = addr
                     os.environ["MASTER_PORT"] = str(port)
 
-                worker_group.execute(set_env_vars, addr=master_addr, port=master_port)
+                execute = cast(
+                    Execute,
+                    worker_group.execute # pyright: ignore[reportUnknownMemberType]
+                )
+
+                execute(set_env_vars, addr=master_addr, port=master_port)
                 url = "env://"
             elif backend_config.init_method == "tcp":
                 url = f"tcp://{master_addr}:{master_port}"
@@ -84,10 +118,15 @@ class RangedTorchBackend(_TorchBackend):
                     f"be either 'env' or 'tcp'."
                 )
 
-            setup_futures = []
+            execute_single_async = cast(
+                ExecuteSingleAsync,
+                worker_group.execute_single_async # pyright: ignore[reportUnknownMemberType]
+            )
+
+            setup_futures: list[ray.ObjectRef[None]] = []
             for i in range(len(worker_group)):
                 setup_futures.append(
-                    worker_group.execute_single_async(
+                    execute_single_async(
                         i,
                         _setup_torch_process_group,
                         backend=backend,

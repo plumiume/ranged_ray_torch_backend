@@ -1,14 +1,8 @@
-[build-system]
-requires = ["setuptools >= 77.0.3"]
-build-backend = "setuptools.build_meta"
-
 [project]
-name = "ranged_ray_torch_backend"
-version = "0.0.0"
-dependencies = [
-    "ray[train]"
-]
+name = "ranged-ray-torch-backend"
+version = "0.1.0"
 requires-python = ">=3.11"
-authors = [
-    { name = "plumiume", email = "plumiiume@gmail.com" }
+dependencies = [
+    "ray[train]>=2.51.0",
+    "torch>=2.9.0",
 ]
